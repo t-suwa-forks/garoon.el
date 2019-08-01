@@ -1,15 +1,20 @@
 ;;; garoon.el --- A Garoon client. -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2014 yewton
+;; Copyright (C) 2019 Tomotaka SUWA
 
 ;; Author: yewton <yewton@gmail.com>
 ;; Version: 0.0.1
-;; Keywords: garoon tool
+;; Package-Requires: ((emacs "25"))
+;; Homepage: https://github.com/t-suwa-forks/garoon.el
+;; Keywords: calendar, comm
 
-;; This program is free software; you can redistribute it and/or
-;; modify it under the terms of the GNU General Public License as
-;; published by the Free Software Foundation; either version 2, or (at
-;; your option) any later version.
+;; This file is not part of GNU Emacs
+
+;; This file is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation; either version 3, or (at your option)
+;; any later version.
 
 ;; This program is distributed in the hope that it will be useful, but
 ;; WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,355 +33,697 @@
 ;;; Code:
 
 (eval-when-compile
-  (require 'cl))
+  (require 'cl-lib))
 
 (require 'mm-decode)
 (require 'org)
-(require 's)
-(require 'soap-client)
+(require 'seq)
+(require 'subr-x)
 (require 'url)
 (require 'xml)
 
-;;;; Customize.
+;; Customize.
 
 (defgroup garoon nil
   "Access Garoon from Emacs."
   :group 'tools)
 
-(defcustom grn:endpoint-url
-  "http://onlinedemo2.cybozu.info/scripts/garoon3/grn.exe"
-  "The location for the Garoon service."
-  :type 'string
-  :group 'garoon)
-
-(defcustom grn:username
-  "sato"
-  "Username for the Garoon service."
-  :type 'string
-  :group 'garoon)
-
-(defcustom grn:password
+(defcustom garoon-wsdl-url
   nil
-  "If non-nil, used as the password for the Garoon service.
-
-For security reasons, this option is turned off by default and
-not recommended to use."
+  "The WSDL url for Garoon soap API."
   :type 'string
   :group 'garoon)
 
-(defcustom grn:expire-time
-  (encode-time 0 0 0 31 11 2037 t)
-  "Default expire time."
-  :type (list 'integer 'integer)
-  :group 'garoon)
-
-(defcustom grn:prefix-for-temporary-events
-  (format "(%c)" (decode-char 'ucs #x4eee))
-  "Prefix for temporary event"
+(defcustom garoon-auth-source
+  "garoon"
+  "The host entry for auth-source."
   :type 'string
   :group 'garoon)
 
-(defcustom grn:property-name-for-facilities
-  "FACILITIES"
-  "Property name for facilities."
-  :type 'string
+(defcustom garoon-use-basic-auth
+  nil
+  "Whether enable basic authentication."
+  :type 'boolean
   :group 'garoon)
 
-(defcustom grn:property-name-for-plans
-  "PLAN"
-  "Property name for plans."
-  :type 'string
-  :group 'garoon)
-
-(defcustom grn:locale
+(defcustom garoon-locale
   "jp"
   "Locale."
   :type 'string
   :group 'garoon)
 
-(defcustom grn:debug
-  nil
-  "When t, enable some debugging facilities."
+(defcustom garoon-schedule-org-file
+  "~/org/garoon.org"
+  "The file storing schedule entries."
+  :type 'string
+  :group 'garoon)
+
+(defcustom garoon-schedule-fetch-days
+  14
+  "The entries scheduled until this will be fetched."
+  :type 'integer
+  :group 'garoon)
+
+(defcustom garoon-schedule-use-plan-for-tags
+  t
+  "Set event tags to plan."
   :type 'boolean
   :group 'garoon)
 
-;;;; Constants.
+;; Constants.
 
-(defconst grn:soap-env-ns "http://www.w3.org/2003/05/soap-envelope")
-(defconst grn:soap-addr-ns "http://schemas.xmlsoap.org/ws/2003/03/addressing")
-(defconst grn:soap-sec-ns "http://schemas.xmlsoap.org/ws/2002/12/secext")
-(defconst grn:soap-util-ns "http://schemas.xmlsoap.org/ws/2002/07/utility")
-(defconst grn:date-format "%Y-%m-%dT%H:%M:%SZ")
-(defconst grn:schedule-api-path "schedule/api?")
+(defconst garoon-soap-env-ns "http://www.w3.org/2003/05/soap-envelope")
+(defconst garoon-soap-addr-ns "http://schemas.xmlsoap.org/ws/2003/03/addressing")
+(defconst garoon-soap-sec-ns "http://schemas.xmlsoap.org/ws/2002/12/secext")
+(defconst garoon-soap-util-ns "http://schemas.xmlsoap.org/ws/2002/07/utility")
 
-;;;; Structures.
+;; Structs.
 
-(cl-defstruct (grn:action
-               (:constructor grn:action-new (name service parameters))
-               (:constructor grn:schedule-action-new
-                             (name parameters &aux (service "schedule")))
-               (:copier grn:action-copy))
-  name service parameters)
+(cl-defstruct
+    (garoon-soap-action
+     (:constructor garoon-base-action-new
+                   (name parameters &optional (service 'BaseService)))
+     (:constructor garoon-schedule-action-new
+                   (name parameters &optional (service 'ScheduleService))))
+  service
+  name
+  parameters)
 
-(defun grn:api-base-url ()
-  (format "%s%s" grn:endpoint-url "/cbpapi/"))
+;; XML related functionalities.
 
-(defun grn:action-url (action)
-  (format "%s%s/api?" (grn:api-base-url) (grn:action-service action)))
+(defun garoon-xml-parse (buffer)
+  "Return xml from BUFFER."
+  (unless buffer
+    (error "No data found in buffer %s" buffer))
+  (with-current-buffer buffer
+    (let ((handle (mm-dissect-buffer 'no-strict))
+          xml)
+      (with-current-buffer (mm-handle-buffer handle)
+        (set-buffer-multibyte t)
+        (setq xml (xml-parse-region)))
+      (mm-destroy-part handle)
+      (unless xml
+        (error "Failed to parse xml of buffer %s" buffer))
+      (kill-buffer)
+      xml)))
 
-(defun grn:action-response-node-name (action)
-  (intern (format "%s:%sResponse"
-                  (grn:action-service action)
-                  (grn:action-name action))))
+(defun garoon-xml-string (node)
+  "Make an XML string from NODE."
+  (with-temp-buffer
+    (save-excursion
+      (xml-print (if (symbolp (car node))
+                     (list node)
+                   node)))
+    (flush-lines "^[[:space:]]*$")
+    (buffer-string)))
 
-;;;; Utilities.
+(defmacro garoon-xml-each-node (tag-or-regexp spec &rest body)
+  "Evaluate BODY with VAR bound to each child from NODE.
+Each child is filtered by TAG-OR-REGEXP.
 
-(defun grn:insert-org-timestamp (time &optional with-hm current-time)
-  (let* ((current-time (or current-time (current-time)))
-         (inactive (time-less-p time current-time)))
-  (org-insert-time-stamp time with-hm inactive)))
+\(fn TAG-OR-REGEXP (VAR NODE) BODY...)"
+  (declare (indent 2)
+           (debug (form (symbolp form) body)))
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (let ((tag (make-symbol "tag")))
+    `(let ((,tag ,tag-or-regexp))
+       (dolist (,(car spec) (xml-node-children ,(nth 1 spec)))
+         (when (and (listp ,(car spec))
+                    (cond
+                     ((symbolp ,tag)
+                      (eq ,tag
+                          (xml-node-name ,(car spec))))
+                     ((stringp ,tag)
+                      (string-match-p
+                       ,tag
+                       (symbol-name (xml-node-name ,(car spec)))))))
+           ,@body)))))
 
-(defun grn:insert-org-time-range (start end &optional current-time)
-  (grn:insert-org-timestamp start t current-time)
-  (insert "--")
-  (grn:insert-org-timestamp end t current-time))
+(defmacro garoon-xml-each-path (path spec &rest body)
+  "Evaluate BODY with VAR bound to each child of PATH.
+PATH is composed of node regexps delimited by \"/\".
 
-(defun* grn:time-set (time &key hour min sec)
-  (let* ((decoded (decode-time time))
-         (hour (or hour (third decoded)))
-         (min (or min (second decoded)))
-         (sec (or sec (first decoded))))
-    (apply 'encode-time `(,sec ,min ,hour ,@(cdddr decoded)))))
+\(fn PATH (VAR NODE) BODY...)"
+  (declare (indent 2)
+           (debug (form (symbolp form) body)))
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (let ((tag-list (make-symbol "tag-list"))
+        (node-list (make-symbol "node-list"))
+        (temp (make-symbol "temp"))
+        (tag (make-symbol "tag")))
+    `(let ((,tag-list (split-string ,path "/"))
+           (,node-list ,(nth 1 spec)))
+       (catch 'not-found
+         (unless (listp (car ,node-list))
+           (setq ,node-list (list ,node-list)))
+         (while ,tag-list
+           (let ((,tag (pop ,tag-list))
+                 ,temp)
+             (while ,node-list
+               (garoon-xml-each-node ,tag (,(car spec) (pop ,node-list))
+                 (push ,(car spec) ,temp)))
+             (unless ,temp
+               (throw 'not-found nil))
+             (setq ,node-list (nreverse ,temp))))
+         (dolist (,(car spec) ,node-list)
+           ,@body)))))
 
-(defun grn:time-start-of-day (time)
-  (grn:time-set time :hour 0 :min 0 :sec 0))
+;; Date & time utilities.
 
-(defun grn:time-end-of-day (time)
-  (grn:time-set time :hour 24 :min 00 :sec -1))
+(defmacro garoon-time-part (time part)
+  "Return PART of TIME with `decode-time'.
 
-(defun grn:format-time-string (time &optional universal)
-  (format-time-string grn:date-format time universal))
+Part symbols are: :sec :min :hour :day :month :year :dow :dst :utfoff."
+  `(pcase (decode-time ,time)
+     (`(,sec ,min ,hour ,day ,month ,year ,dow ,dst ,utfoff)
+      ;; to suppress flycheck warnings, consume all lexical variables here
+      (plist-get
+       (list :sec sec
+             :min min
+             :hour hour
+             :day day
+             :month month
+             :year year
+             :dow dow
+             :dst dst
+             :utfoff utfoff)
+       ,part))))
 
-;;;; Envelope construction.
+(defun garoon-time-weekday-p (time)
+  "Return t if TIME is weekday."
+  (<= 1 (garoon-time-part time :dow) 5))
 
-(defun grn:create-timestamp-element (create-time expire-time)
-  (s-join "\n"
-          `("<Timestamp SOAP-ENV:mustUnderstand=\"1\" Id=\"id\""
-            ,(format "xmlns=\"%s\">" grn:soap-util-ns)
-            ,(format "<Created>%s</Created>" (grn:format-time-string create-time t))
-            ,(format "<Expires>%s</Expires>" (grn:format-time-string expire-time t))
-            "</Timestamp>")))
+(defun garoon-time-day-equal-p (date1 date2)
+  "Return t if DATE1 and DATE2 are same day."
+  (and (= (garoon-time-part date1 :year)
+          (garoon-time-part date2 :year))
+       (= (time-to-day-in-year date1)
+          (time-to-day-in-year date2))))
 
-(defun grn:get-password ()
-  (or grn:password (read-passwd "Password: ")))
+(defun garoon-time-in-week-p (time start)
+  "Return t if TIME is in dates between START and START + 6.
 
-(defun grn:create-security-element ()
-  (s-join "\n"
-          `(,(format "<Security xmlns:wsu=\"%s\"" grn:soap-util-ns)
-            "SOAP-ENV:mustUnderstand=\"1\""
-            ,(format "xmlns=\"%s\">" grn:soap-sec-ns)
-            "<UsernameToken wsu:Id=\"id\">"
-            ,(format "<Username>%s</Username>" grn:username)
-            ,(format "<Password>%s</Password>" (grn:get-password))
-            "</UsernameToken>"
-            "</Security>")))
+Negative START means offset from last day of month."
+  (let ((year (garoon-time-part time :year))
+        (month (garoon-time-part time :month))
+        (day (garoon-time-part time :day)))
+    (when (< start 0)
+      (setq start (+ (calendar-last-day-of-month month year)
+                     start)))
+    (<= start day (+ start 6))))
 
-(defun grn:create-action-element (name)
-  (s-join "\n"
-          `("<Action SOAP-ENV:mustUnderstand=\"1\""
-            ,(format "xmlns=\"%s\">" grn:soap-addr-ns)
-            ,name
-            "</Action>")))
+(defun garoon-time-start-of-day (date)
+  "Make DATE start."
+  (safe-date-to-time (concat date "T00:00:00")))
 
-(defun grn:create-body-element (action)
-  (let ((action-name (grn:action-name action)))
-    (s-join "\n"
-            `("<SOAP-ENV:Body>"
-              ,(format "<%s>" action-name)
-              ,(grn:action-parameters action)
-              ,(format "</%s>" action-name)
-              "</SOAP-ENV:Body>"))))
+(defun garoon-time-end-of-day (date)
+  "Make DATE end."
+  (safe-date-to-time (concat date "T23:59:59")))
 
-(defun grn:create-envelope (action create-time expire-time)
-  (s-join "\n"
-          `("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-            ,(format "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"%s\">" grn:soap-env-ns)
-            "<SOAP-ENV:Header>"
-            ,(grn:create-action-element (grn:action-name action))
-            ,(grn:create-security-element)
-            ,(grn:create-timestamp-element create-time expire-time)
-            ,(format "<Locale>%s</Locale>" grn:locale)
-            "</SOAP-ENV:Header>"
-            ,(grn:create-body-element action)
-            "</SOAP-ENV:Envelope>")))
+(defun garoon-time-add-days (time days)
+  "Return time adding DAYS to TIME."
+  (time-add time (days-to-time days)))
 
-;;;; Actions.
+(defun garoon-time-date-string (time)
+  "Format TIME to YYYY-MM-DD."
+  (format-time-string "%F" time t))
 
-(defun grn:get-body (node)
-  (car (xml-get-children node 'soap:Body)))
+;; Envelope construction.
 
-(defun grn:get-returns (node response-node-name)
-  (car (xml-get-children
-        (car (xml-get-children
-              (grn:get-body node)
-              response-node-name))
-        'returns)))
+(defun garoon-soap-xsd-datetime (time)
+  "Make xsd:dateTime string from TIME in UTC."
+  (format-time-string "%FT%TZ" time t))
 
-(defun grn:invoke-action (action)
-  (let ((url-request-method "POST")
-        (url-package-name "garoon.el")
-        (url-request-data
-         (grn:create-envelope action (current-time) grn:expire-time))
+(defun garoon-soap-action-element (action)
+  "Return an action element of ACTION."
+  `(Action ((xmlns . ,garoon-soap-addr-ns))
+           ,(garoon-soap-action-name action)))
+
+(defun garoon-soap-timestamp-element ()
+  "Return a timestamp element."
+  (let ((created (garoon-soap-xsd-datetime (current-time)))
+        (expires (garoon-soap-xsd-datetime (time-add (current-time) 60))))
+    `(Timestamp
+      ((xmlns . ,garoon-soap-util-ns))
+      (Created nil ,created)
+      (Expires nil ,expires))))
+
+(defun garoon-soap-locale-element ()
+  "Return a locale element."
+  `(Locale nil ,garoon-locale))
+
+(defun garoon-soap-security-element ()
+  "Return a security element."
+  (let ((cred (garoon-soap-credential)))
+    `(Security
+      ((xmlns . ,garoon-soap-sec-ns)
+       (xmlns:wsu . ,garoon-soap-util-ns))
+      (UsernameToken
+       ((wsu:id . "id"))
+       (Username nil ,(pop cred))
+       (Password nil ,(pop cred))))))
+
+(defun garoon-soap-header-element (action)
+  "Return a header element of ACTION."
+  (let (children)
+    (push (garoon-soap-locale-element) children)
+    (unless garoon-use-basic-auth
+      (push (garoon-soap-security-element) children))
+    (push (garoon-soap-timestamp-element) children)
+    (push (garoon-soap-action-element action) children)
+    `(env:Header nil ,@children)))
+
+(defun garoon-soap-body-element (action)
+  "Return a body element of ACTION."
+  `(env:Body
+    nil
+    (parameters ,@(garoon-soap-action-parameters action))))
+
+(defun garoon-soap-envelope (action)
+  "Return xml for ACTION."
+  (let ((xml `(env:Envelope
+               ((xmlns:env . ,garoon-soap-env-ns))
+               ,(garoon-soap-header-element action)
+               ,(garoon-soap-body-element action))))
+    (concat "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            (garoon-xml-string xml))))
+
+;; Service URL functions.
+
+(defvar garoon-soap-service-url-alist nil)
+
+(defun garoon-soap-initialize-service-url-alist ()
+  "Initialize `garoon-soap-service-url-alist' from `garoon-wsdl-url'."
+  (let ((wsdl (garoon-xml-parse (url-retrieve-synchronously garoon-wsdl-url))))
+    (setq garoon-soap-service-url-alist nil)
+    (garoon-xml-each-node 'service (service (car wsdl))
+      (let ((sym (intern (xml-get-attribute service 'name)))
+            (url (catch 'found
+                   (garoon-xml-each-path "port/:address$" (addr service)
+                     (throw 'found (xml-get-attribute addr 'location))))))
+        (when url
+          (push (cons sym url) garoon-soap-service-url-alist))))))
+
+(defun garoon-soap-service-url (service)
+  "Return url for SERVICE from `garoon-soap-service-url-alist'."
+  (unless garoon-soap-service-url-alist
+    (garoon-soap-initialize-service-url-alist))
+  (cdr (assq service garoon-soap-service-url-alist)))
+
+;; Actions.
+
+(defun garoon-soap-credential ()
+  "Return the credential for `garoon-auth-source'."
+  (let* ((auth (auth-source-user-and-password garoon-auth-source))
+         (username (nth 0 auth))
+         (password (nth 1 auth)))
+    (unless (and username password)
+      (error "No credential found for %s in auth-sources" garoon-auth-source))
+    (list username password)))
+
+(defun garoon-soap-basic-auth ()
+  "Make a HTTP basic authentication header."
+  (let ((cred (string-join (garoon-soap-credential) ":")))
+    (cons "Authorization"
+          (string-join (list "Basic" (base64-encode-string cred)) " "))))
+
+(defun garoon-soap-request (action)
+  "Request ACTION."
+  (let ((url (garoon-soap-service-url (garoon-soap-action-service action)))
+        (url-request-method "POST")
         (url-mime-charset-string "utf-8;q=1, iso-8859-1;q=0.5")
-        (url-debug grn:debug)
-        (url (grn:action-url action))
-        buffer mime-part)
-    (setq buffer (url-retrieve-synchronously url))
-    (with-current-buffer buffer
-      (when grn:debug
-        (let ((debug-buffer (get-buffer-create "*GAROON-DEBUG*")))
-          (copy-to-buffer debug-buffer (point-min) (point-max))
-          (with-current-buffer debug-buffer
-            (decode-coding-region (point-min) (point-max) 'utf-8))))
-      (declare (special url-http-response-status))
-      (when (null url-http-response-status)
-        (error "No HTTP response from server"))
-      (setq mime-part (mm-dissect-buffer t)))
-    (kill-buffer buffer)
-    (unless mime-part
-      (error "Failed to decode response from server"))
-    (with-temp-buffer
-      (mm-insert-part mime-part)
-      (decode-coding-region (point-min) (point-max) 'utf-8)
-      (grn:get-returns
-       (car (xml-parse-region))
-       (grn:action-response-node-name action)))))
+        (url-request-extra-headers
+         '(("Content-Type" . "application/soap+xml; charset=\"utf-8\"")))
+        (url-request-data (garoon-soap-envelope action))
+        (url-package-name "garoon.el")
+        (returns (format ":%sResponse$/returns"
+                         (garoon-soap-action-name action))))
+    (when garoon-use-basic-auth
+      (push (garoon-soap-basic-auth) url-request-extra-headers))
+    (catch 'found
+      (let ((response (car (garoon-xml-parse (url-retrieve-synchronously url)))))
+        (garoon-xml-each-node ":Body$" (body response)
+          (garoon-xml-each-path returns (ret body)
+            (throw 'found ret))
+          ;; there must be an error response
+          (garoon-xml-each-path ":Fault$/:Detail$" (detail body)
+            (error "Got an error response:\n%s"
+                   (garoon-xml-string detail)))))
+      (error "Seems invalid XML response"))))
 
-(defun grn:create-simple-parameters-element (&optional params)
-  (s-join "\n"
-          `("<parameters"
-            ,(mapconcat (lambda (param)
-                          (when (stringp (cdr param))
-                            (format "%s=\"%s\"" (car param) (cdr param))))
-                        params
-                        " ")
-            ">"
-            "</parameters>")))
+;; Schedule service APIs.
 
-;;;; Concrete actions.
+(defun garoon-schedule-api-get-event-versions (start end)
+  "Get schedule versions between START and END."
+  (let* ((start-date (garoon-time-date-string start))
+         (end-date (garoon-time-date-string end))
+         (attrs `((start . ,(concat start-date "T00:00:00Z"))
+                  (end . ,(concat end-date "T23:59:59Z"))
+                  (start_for_daily . ,start-date)
+                  (end_for_daily . ,end-date)))
+         (items (org-map-entries
+                 (lambda ()
+                   `(event_item
+                     ((id . ,(org-id-get))
+                      (version . ,(org-entry-get nil "VERSION")))))))
+         (action (garoon-schedule-action-new "ScheduleGetEventVersions"
+                                             (append (list attrs) items)))
+         events)
+    (garoon-xml-each-node 'event_item (node (garoon-soap-request action))
+      (push node events))
+    (nreverse events)))
 
-(defun grn:schedule-get-events (start end &optional start-for-daily end-for-daily)
-  (let* ((params `((start . ,start)
-                  (end . ,end)
-                  (start_for_daily . ,(or start-for-daily start))
-                  (end_for_daily . ,(or end-for-daily end))))
-         (action (grn:schedule-action-new "ScheduleGetEvents"
-                                          (grn:create-simple-parameters-element params))))
-     (grn:invoke-action action)))
+(defun garoon-schedule-api-get-events-by-id (id-list)
+  "Get schedules of which id is in ID-LIST."
+  (let* ((items (mapcar (lambda (id) `(event_id nil ,id)) id-list))
+         (action (garoon-schedule-action-new "ScheduleGetEventsById"
+                                             (append '(nil) items)))
+         events)
+    (when id-list
+      (garoon-xml-each-node 'schedule_event (node (garoon-soap-request action))
+        (push node events)))
+    (nreverse events)))
 
-;;;; Sub functions for `grn:get-schedule-events'
+;; Event parsing functionality.
 
-(defun grn:get-facilities (event-node)
-  (let (result facility)
-    (dolist (member (xml-get-children
-                     (car (xml-get-children event-node 'members))
-                     'member))
-      (setq facility (car (xml-get-children member 'facility)))
-      (when facility
-        (setq result (cons (xml-get-attribute facility 'name) result))))
+(defun garoon-event-time (date time)
+  "Return a time by parsing combined DATE and TIME."
+  (safe-date-to-time (concat (format-time-string "%FT" date) time "JST")))
+
+(defun garoon-event-repeat-day (plist)
+  "Make day repeat schedule along with PLIST."
+  (let ((start (plist-get plist :start-date))
+        (end (plist-get plist :end-date))
+        (start_time (plist-get plist :start-time))
+        (end_time (plist-get plist :end-time)))
+    (list (list (garoon-event-time start start_time)
+                (garoon-event-time end end_time)))))
+
+(defun garoon-event-repeat-weekday (plist)
+  "Make weekday repeat schedule along with PLIST."
+  (let ((temp (plist-get plist :start-date))
+        (end (plist-get plist :end-date))
+        (start-time (plist-get plist :start-time))
+        (end-time (plist-get plist :end-time))
+        day1 day2
+        result)
+    (while (time-less-p temp end)
+      (if (garoon-time-weekday-p temp)
+          (if day1
+              (setq day2 (garoon-event-time temp end-time))
+            (setq day1 (garoon-event-time temp start-time)))
+        (when (and day1 day2)
+          (push (list day1 day2) result))
+        (setq day1 nil)
+        (setq day2 nil))
+      (setq temp (garoon-time-add-days temp 1)))
     result))
 
-(defun grn:handle-repeat-event (datetime event &optional current-time)
-  (let* ((condition
-          (car (xml-get-children
-                (car (xml-get-children event 'repeat_info))
-                'condition)))
-         (start-hm (mapcar 'string-to-int (s-split ":" (xml-get-attribute condition 'start_time))))
-         (end-hm (mapcar 'string-to-int (s-split ":" (xml-get-attribute condition 'end_time))))
-         (start (grn:time-set datetime :hour (first start-hm) :min (second start-hm)))
-         (end (grn:time-set datetime :hour (first end-hm) :min (second end-hm))))
-    (grn:insert-org-time-range start end current-time)))
+(defun garoon-event-repeat-week (plist)
+  "Make week repeat schedule along with PLIST."
+  (let ((temp (plist-get plist :start-date))
+        (end (plist-get plist :end-date))
+        (start-time (plist-get plist :start-time))
+        (end-time (plist-get plist :end-time))
+        (day-of-week (plist-get plist :week))
+        result)
+    (while (time-less-p temp end)
+      (when (= day-of-week (garoon-time-part temp :dow))
+        (push (list (garoon-event-time temp start-time)
+                    (garoon-event-time temp end-time))
+              result))
+      (setq temp (garoon-time-add-days temp 1)))
+    result))
 
-(defun grn:handle-normal-event (datetime event &optional current-time)
-  (let* ((when-node (car (xml-get-children
-                          (car (xml-get-children event 'when))
-                          'datetime)))
-         (start (safe-date-to-time (xml-get-attribute when-node 'start)))
-         (end (safe-date-to-time (xml-get-attribute when-node 'end)))
-         (zero-time '(0 0)))
-    (if (and (equal start zero-time) (equal end zero-time))
-        (grn:insert-org-time-range
-         (grn:time-start-of-day datetime)
-         (grn:time-end-of-day datetime)
-         current-time)
-      (grn:insert-org-time-range start end current-time))))
+(defun garoon-event-repeat-month-week (plist)
+  "Make month week repeat schedule along with PLIST."
+  (let ((temp (plist-get plist :start-date))
+        (end (plist-get plist :end-date))
+        (start-time (plist-get plist :start-time))
+        (end-time (plist-get plist :end-time))
+        (day-of-week (plist-get plist :week))
+        (week (cdr (assoc-string (plist-get plist :type)
+                                 '(("1stweek" . 1)
+                                   ("2ndweek" . 8)
+                                   ("3rdweek" . 15)
+                                   ("4thweek" . 22)
+                                   ("lastweek" . -6)))))
+        result)
+    (while (time-less-p temp end)
+      (when (and (= day-of-week (garoon-time-part temp :dow))
+                 (garoon-time-in-week-p temp week))
+        (push (list (garoon-event-time temp start-time)
+                    (garoon-event-time temp end-time))
+              result))
+      (setq temp (garoon-time-add-days temp 1)))
+    result))
 
-(defun grn:require-org-mode ()
-  (unless (eq 'org-mode major-mode) (org-mode)))
+(defun garoon-event-repeat-month (plist)
+  "Make month repeat schedule along with PLIST."
+  (let ((temp (plist-get plist :start-date))
+        (end (plist-get plist :end-date))
+        (day (plist-get plist :day))
+        result)
+    (while (time-less-p temp end)
+      (when (= day (garoon-time-part temp :day))
+        (push (list temp nil) result))
+      (setq temp (garoon-time-add-days temp 1)))
+    result))
 
-(defun grn:handle-event (datetime event &optional current-time)
-  (let* ((event-type (xml-get-attribute event 'event_type))
-         (facilities (grn:get-facilities event))
-         (event-id (xml-get-attribute event 'id))
-         (schedule-uri (concat grn:endpoint-url
-                               (format "/schedule/view?event=%s&bdate=%s"
-                                       event-id
-                                       (format-time-string "%Y-%m-%d" datetime))))
-         (plan (xml-get-attribute event 'plan))
-         (detail (xml-get-attribute event 'detail)))
-    (grn:require-org-mode)
-    (cl-flet ((event-is (expected) (string= event-type (symbol-name expected))))
-      (insert "* ")
-      (org-insert-link nil schedule-uri detail)
-      (newline)
-      (cond
-       ((event-is 'normal)
-        (grn:handle-normal-event datetime event current-time))
-       ((event-is 'repeat)
-        (grn:handle-repeat-event datetime event current-time))
-       ((event-is 'banner)
-        (grn:insert-org-timestamp datetime current-time))
-       ((event-is 'temporary)
-        (insert grn:prefix-for-temporary-events)
-        (grn:insert-org-timestamp datetime current-time))
-       (t
-        (insert event-type)))
-      (when facilities
-        (org-set-property grn:property-name-for-facilities (s-join " / " facilities)))
-      (when (not (string= "" plan))
-        (org-set-property grn:property-name-for-plans plan))
-      (newline 2))))
+(defun garoon-event-condition (condition)
+  "Make CONDITION into plist."
+  (let* ((attr (xml-node-attributes condition))
+         (plist (list :type (alist-get 'type attr)
+                      :day (string-to-number (alist-get 'day attr))
+                      :week (string-to-number (alist-get 'week attr))
+                      :start-date (garoon-time-start-of-day
+                                   (alist-get 'start_date attr))
+                      :end-date (alist-get 'end_date attr)
+                      :start-time (alist-get 'start_time attr)
+                      :end-time (alist-get 'end_time attr)))
+         (start-date (plist-get plist :start-date))
+         (end-date (plist-get plist :end-date)))
+    (unless end-date
+      (setq end-date (garoon-time-add-days start-date garoon-schedule-fetch-days))
+      (setq end-date (garoon-time-date-string end-date)))
+    (plist-put plist :end-date (garoon-time-end-of-day end-date))))
 
-;;;; Interactive functions.
+(defun garoon-event-repeat-info (info)
+  "Make a list of dates from INFO."
+  (let (exclusion events)
+    (garoon-xml-each-path "exclusive_datetimes/exclusive_datetime" (ex info)
+      (let ((start (safe-date-to-time (xml-get-attribute ex 'start)))
+            (end (safe-date-to-time (xml-get-attribute ex 'end))))
+        (push (list start end) exclusion)))
+    (garoon-xml-each-node 'condition (condition info)
+      (let ((plist (garoon-event-condition condition)))
+        (setq events
+              (pcase (plist-get plist :type)
+                ("day"
+                 (garoon-event-repeat-day plist))
+                ("weekday"
+                 (garoon-event-repeat-weekday plist))
+                ("week"
+                 (garoon-event-repeat-week plist))
+                ((pred (string-match-p "[^w]+week$"))
+                 (garoon-event-repeat-month-week plist))
+                ("month"
+                 (garoon-event-repeat-month plist))))))
+    (seq-filter (lambda (x)
+                  (let ((start (pop x))
+                        (end (pop x)))
+                    (not (catch 'exclude
+                           (dolist (ex exclusion)
+                             (and (time-less-p (pop ex) start)
+                                  (time-less-p end (pop ex))
+                                  (throw 'exclude t)))))))
+                events)))
 
-(defun grn:quit-garoon-window (n)
-  (interactive "p")
-  (if (string= (buffer-name) "*GAROON EVENTS*")
-      (quit-window)
-    (self-insert-command n)))
+(defun garoon-event-timestamps (event)
+  "Return time information of EVENT at DATETIME."
+  (let (dates)
+    (garoon-xml-each-path "when/date" (date event)
+      (let ((start (xml-get-attribute date 'start))
+            (end (xml-get-attribute date 'end)))
+        (push (list (safe-date-to-time start)
+                    (safe-date-to-time end))
+              dates)))
+    (garoon-xml-each-node 'repeat_info (info event)
+      (setq dates (garoon-event-repeat-info info)))
+    (nreverse dates)))
+
+(defun garoon-event-users (event)
+  "Return users of EVENT."
+  (let (result)
+    (garoon-xml-each-path "members/member/user" (user event)
+      (push (xml-get-attribute user 'name) result))
+    (nreverse result)))
+
+(defun garoon-event-facilities (event)
+  "Return facilities of EVENT."
+  (let (result)
+    (garoon-xml-each-path "members/member/facility" (facility event)
+      (push (xml-get-attribute facility 'name) result))
+    (nreverse result)))
+
+;; Org related functions.
+
+(defun garoon-org-goto (id)
+  "Return schedule entry of ID from EVENTS."
+  (let ((pos (car (org-map-entries '(point) (format "ID=\"%s\"" id)))))
+    (when pos
+      (goto-char pos))))
+
+(defun garoon-org-timestamp (list)
+  "Make org timestamp from LIST.
+
+The LIST forms (START END)."
+  (let ((fmt (cdr org-time-stamp-formats))
+        (start (pop list))
+        (end (pop list)))
+    (if (garoon-time-day-equal-p start end)
+        (replace-regexp-in-string
+         ">"
+         (format-time-string "--%H:%M>" end)
+         (format-time-string fmt start))
+      (concat
+       (format-time-string fmt start)
+       "--"
+       (format-time-string fmt end)))))
+
+(defun garoon-org-expiration-date (dates)
+  "Get max date in DATES."
+  (let ((max '(0 0)))
+    (dolist (d dates)
+      (let ((end (nth 1 d)))
+        (if (time-less-p max end)
+            (setq max end))))
+    (garoon-time-date-string max)))
+
+(defun garoon-org-put-properties (event)
+  "Set properties of current item from EVENT."
+  (let* ((timestamps (garoon-event-timestamps event))
+         (props `((ID
+                   . ,(xml-get-attribute event 'id))
+                  (VERSION
+                   . ,(xml-get-attribute event 'version))
+                  (PLAN
+                   . ,(xml-get-attribute event 'plan))
+                  (DESCRIPTION
+                   . ,(xml-get-attribute event 'description))
+                  (TIMESTAMPS
+                   . ,(string-join
+                       (mapcar 'garoon-org-timestamp timestamps) ","))
+                  (EXPIRATION
+                   . ,(garoon-org-expiration-date timestamps))
+                  (USERS
+                   . ,(string-join (garoon-event-users event) ","))
+                  (FACILITIES
+                   . ,(string-join (garoon-event-facilities event) ",")))))
+    (when garoon-schedule-use-plan-for-tags
+      (org-set-tags (alist-get 'PLAN props)))
+    (dolist (prop props)
+      (org-entry-put nil (symbol-name (car prop)) (cdr prop)))
+    (goto-char (org-entry-end-position))
+    (newline)))
+
+;; Scheudle related internal functions.
+
+(defun garoon-schedule--get (id events)
+  "Return schedule entry of ID from EVENTS."
+  (catch 'found
+    (dolist (event events)
+      (if (string= id (xml-get-attribute event 'id))
+          (throw 'found event)))))
+
+(defun garoon-schedule--add (added events)
+  "Add newly ADDED entries to current buffer from EVENTS."
+  (while added
+    (let* ((id (pop added))
+           (event (garoon-schedule--get id events)))
+      (goto-char (point-max))
+      (org-insert-heading)
+      (insert (xml-get-attribute event 'detail))
+      (garoon-org-put-properties event))))
+
+(defun garoon-schedule--update (updated events)
+  "Update existing UPDATED entries in current buffer from EVENTS."
+  (while updated
+    (save-excursion
+      (let* ((id (pop updated))
+             (event (garoon-schedule--get id events)))
+        (when (garoon-org-goto id)
+          (org-edit-headline (xml-get-attribute event 'detail))
+          (garoon-org-put-properties event))))))
+
+(defun garoon-schedule--remove (removed)
+  "Remove recently REMOVED entries from current buffer."
+  (while removed
+    (save-excursion
+      (when (garoon-org-goto (pop removed))
+        (let ((dates (org-entry-get nil "TIMESTAMPS")))
+          (org-entry-put nil "REMOVED" "")
+          (org-entry-put nil "TIMESTAMPS"
+                         (replace-regexp-in-string
+                          "<" "[" (replace-regexp-in-string
+                                   ">" "]" dates))))))))
+
+(defun garoon-schedule--archive ()
+  "Archive old schedule entries from current buffer."
+  (let ((today (current-time)))
+    (org-map-entries
+     (lambda ()
+       (let ((end (concat (org-entry-get nil "EXPIRATION")
+                          "T00:00:00JST")))
+         (when (time-less-p (safe-date-to-time end) today)
+           (org-archive-subtree)
+           (setq org-map-continue-from (point))))))))
+
+(defun garoon-schedule--validate-configuration ()
+  "Validate configuration."
+  (dolist (var '(garoon-wsdl-url
+                 garoon-auth-source
+                 garoon-schedule-org-file))
+    (unless (symbol-value var)
+      (user-error "Please specify `%s'" var))))
+
+(defun garoon-schedule--get-diffs ()
+  "Get schedule differences."
+  (let ((start (current-time))
+        (end (garoon-time-add-days
+              (current-time) garoon-schedule-fetch-days))
+        added modified removed)
+    (dolist (event (garoon-schedule-api-get-event-versions start end))
+      (let ((id (xml-get-attribute event 'id))
+            (operation (xml-get-attribute event 'operation)))
+        (push id (pcase operation
+                   ("add" added)
+                   ("modify" modified)
+                   ("remove" removed)))))
+    (list added modified removed)))
+
+;; Interactive functions.
 
 ;;;###autoload
-(defun grn:get-schedule-events (&optional datetime)
-  "Pop up a buffer showing specified date events."
+(defun garoon-schedule-sync ()
+  "Synchronize garoon schedule."
   (interactive)
-  (let* ((datetime (or datetime (org-read-date nil t)))
-         (start (grn:format-time-string (grn:time-start-of-day datetime)))
-         (end (grn:format-time-string (grn:time-end-of-day datetime)))
-         (buffer (get-buffer-create "*GAROON EVENTS*"))
-         (inhibit-read-only t)
-         (events (grn:schedule-get-events start end start end)))
+  (garoon-schedule--validate-configuration)
+  (let ((buffer (find-file-noselect garoon-schedule-org-file)))
     (with-current-buffer buffer
       (org-mode)
-      (erase-buffer)
-      (dolist (event (xml-get-children events 'schedule_event))
-        (grn:handle-event datetime event))
-      (mark-whole-buffer)
-      (ignore-errors (org-sort-entries nil ?t))
-      (deactivate-mark)
-      (goto-char (point-min))
-      (local-set-key "q" #'grn:quit-garoon-window)
-      (setq buffer-read-only t)
-      (pop-to-buffer buffer))))
+      (pcase (garoon-schedule--get-diffs)
+        (`(,added ,modified ,removed)
+         (let ((events (garoon-schedule-api-get-events-by-id
+                        (append added modified))))
+           (garoon-schedule--add added events)
+           (garoon-schedule--update modified events)
+           (garoon-schedule--remove removed))))
+      (garoon-schedule--archive)
+      (save-buffer)))
+  (message "garoon schedule synchronized."))
 
 (provide 'garoon)
 
