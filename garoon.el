@@ -676,7 +676,7 @@ The LIST forms (START END)."
     (org-map-entries
      (lambda ()
        (let ((end (concat (org-entry-get nil "EXPIRATION")
-                          "T00:00:00JST")))
+                          "T23:59:59JST")))
          (when (time-less-p (safe-date-to-time end) today)
            (org-archive-subtree)
            (setq org-map-continue-from (point))))))))
