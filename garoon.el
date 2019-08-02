@@ -67,7 +67,7 @@
   :group 'garoon)
 
 (defcustom garoon-locale
-  "jp"
+  "ja"
   "Locale."
   :type 'string
   :group 'garoon)
