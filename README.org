@@ -3,7 +3,11 @@
   [[https://developer.cybozu.io/hc/ja/categories/200157760-Garoon-SOAP-API][Garoon SOAP API]] のスケジュール API を利用して直近の予定を取得し、Org
   ファイルに書き出す Emacs Lisp 実装です。
 
-  **https 経由で API を実行できない場合には、Garoon 用のパスワードが簡単に流出するリスクがあるため、このパッケージを使用しないで下さい。**
+  [[https://github.com/yewton/garoon.el][yewton/garoon.el]] からフォークしたバージョンではありますが、機能的に
+  は全面的に書き換えており、本家の更新も止まっている状態のため、PR を
+  出す予定はなく、独自に開発を進める方針です。
+
+  なお、 *https 経由で API を実行できない場合には、Garoon 用のパスワードが簡単に流出するリスクがあるため、このパッケージを使用しないで下さい。*
 
 * 主な機能
 
@@ -18,18 +22,17 @@
    例) 
 
    #+begin_src org
-   * 社内会議＠20F                                                :会議:
-     :PROPERTIES:
-     :ID:       1780021
-     :VERSION:  1564117216
-     :PLAN:     会議
-     :DESCRIPTION: 次期システム更新に向けた構成検討
-     :TIMESTAMPS: <2019-08-09 金 15:00--17:00>
-     :EXPIRATION: 2019-08-09
-     :USERS:    
-     :FACILITIES: 
-     :END:
-  
+     ,* 社内会議＠20F                                                :会議:
+       :PROPERTIES:
+       :ID:       1780021
+       :VERSION:  1564117216
+       :PLAN:     会議
+       :DESCRIPTION: 次期システム更新に向けた構成検討
+       :TIMESTAMPS: <2019-08-09 金 15:00--17:00>
+       :EXPIRATION: 2019-08-09
+       :USERS:    相川,石田,臼井,榎本,岡村
+       :FACILITIES: λ会議室
+       :END:
    #+end_src
 
    既存の Org エントリがある場合には、同期実行時に ID と VERSION を
@@ -37,7 +40,6 @@
 
    もし、該当イベントが更新されている場合、その内容を既存の Org エント
    リに反映しますが、対象となるのは、見出しとタグ、プロパティのみです。
-
    このため、Org エントリに独自に追加した内容は Garoon との同期で消し
    ません(Garoon に反映もしません)。
 
@@ -103,7 +105,7 @@
 
 * インストール
 
-  ~~/.emacs.d/init.el~ 等の初期化ファイルに以下を追加するか、
+  ~/.emacs.d/init.el 等の初期化ファイルに以下を追加するか、
 
   #+begin_src emacs-lisp
   (require 'garoon.el)
@@ -146,7 +148,7 @@
 
     Basic 認証を使うかどうかを指定します。デフォルトは ~nil~ です。
 
-    Basic 認証を使わない場合、 **SOAP エンベロープにパスワードが平文で出力** されます。
+    Basic 認証を使わない場合、 *SOAP エンベロープにパスワードが平文で出力* されます。
 
     ちなみに、私の環境では Basic 認証が利用できないため、この機能が検
     証できていないことをご了承下さい。
