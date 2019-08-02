@@ -3,9 +3,9 @@
   [[https://developer.cybozu.io/hc/ja/categories/200157760-Garoon-SOAP-API][Garoon SOAP API]] のスケジュール API を利用して直近の予定を取得し、Org
   ファイルに書き出す Emacs Lisp 実装です。
 
-  [[https://github.com/yewton/garoon.el][yewton/garoon.el]] からフォークしたバージョンではありますが、機能的に
-  は全面的に書き換えており、本家の更新も止まっている状態のため、PR を
-  出す予定はなく、独自に開発を進める方針です。
+  [[https://github.com/yewton/garoon.el][yewton/garoon.el]] からフォークしたものではありますが、全面的に書き換
+  えており、本家の更新も止まっている状態のため、PR を出す予定はなく、
+  別バージョンとして独自に開発を進める方針です。
 
   なお、 *https 経由で API を実行できない場合には、Garoon 用のパスワードが簡単に流出するリスクがあるため、このパッケージを使用しないで下さい。*
 
@@ -40,8 +40,8 @@
 
    もし、該当イベントが更新されている場合、その内容を既存の Org エント
    リに反映しますが、対象となるのは、見出しとタグ、プロパティのみです。
-   このため、Org エントリに独自に追加した内容は Garoon との同期で消し
-   ません(Garoon に反映もしません)。
+   このため、Org エントリに独自に追加した内容は Garoon と同期しても消
+   えません(Garoon に反映もされません)。
 
    つまり、Garoon のイベントに個人的なメモをつけることができます。
 
@@ -122,8 +122,8 @@
 
   - 変数: ~garoon-auth-source~
 
-    Garoon SOAP API 利用時のユーザーID/パスワードは ~auth-source~ から取得します。
-    デフォルトは ~garoon~ です。
+    Garoon SOAP API 利用時のユーザーID/パスワードを ~auth-source~ から
+    取得するためのホスト名です。デフォルトは "garoon" です。
 
   - 変数: ~garoon-schedule-org-file~
 
@@ -137,7 +137,7 @@
   - 変数: ~garoon-schedule-fetch-days~
     
     今日から向こう何日間の Garoon イベントを取得するかを指定します。
-    デフォルトは ~14~ です。
+    デフォルトは 14 です。
 
   - 変数: ~garoon-schedule-use-plan-for-tags~
 
