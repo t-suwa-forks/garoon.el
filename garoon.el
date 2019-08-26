@@ -408,6 +408,15 @@ Negative START means offset from last day of month."
 
 ;; Event parsing functionality.
 
+(defun garoon-event-start-end (start end)
+  "Return a pair of time from START and END."
+  (if (string-match "T" start)
+      (list (safe-date-to-time start)
+            (safe-date-to-time end))
+    ;; maybe all day
+    (list (safe-date-to-time (concat start "T00:00:00JST"))
+          nil)))
+
 (defun garoon-event-time (date time)
   "Return a time by parsing combined DATE and TIME."
   (safe-date-to-time (concat (format-time-string "%FT" date) time "JST")))
@@ -547,9 +556,7 @@ Negative START means offset from last day of month."
     (garoon-xml-each-path "when/date" (date event)
       (let ((start (xml-get-attribute date 'start))
             (end (xml-get-attribute date 'end)))
-        (push (list (safe-date-to-time start)
-                    (safe-date-to-time end))
-              dates)))
+        (push (garoon-event-start-end start end) dates)))
     (garoon-xml-each-node 'repeat_info (info event)
       (setq dates (garoon-event-repeat-info info)))
     (nreverse dates)))
@@ -580,18 +587,23 @@ Negative START means offset from last day of month."
   "Make org timestamp from LIST.
 
 The LIST forms (START END)."
-  (let ((fmt (cdr org-time-stamp-formats))
+  (let ((date (car org-time-stamp-formats))
+        (time (cdr org-time-stamp-formats))
         (start (pop list))
         (end (pop list)))
-    (if (garoon-time-day-equal-p start end)
-        (replace-regexp-in-string
-         ">"
-         (format-time-string "--%H:%M>" end)
-         (format-time-string fmt start))
+    (cond
+     ((null end)                        ; all day
+      (format-time-string date start))
+     ((garoon-time-day-equal-p start end) ; same day
+      (replace-regexp-in-string
+       ">"
+       (format-time-string "--%H:%M>" end)
+       (format-time-string time start)))
+     (t                                 ; period
       (concat
-       (format-time-string fmt start)
+       (format-time-string time start)
        "--"
-       (format-time-string fmt end)))))
+       (format-time-string time end))))))
 
 (defun garoon-org-expiration-date (dates)
   "Get max date in DATES."
