@@ -68,25 +68,25 @@
 
 (defcustom garoon-locale
   "ja"
-  "Locale."
+  "Locale for error messages."
   :type 'string
   :group 'garoon)
 
 (defcustom garoon-schedule-org-file
   "~/org/garoon.org"
-  "The file storing schedule entries."
+  "The file storing Garoon events."
   :type 'string
   :group 'garoon)
 
 (defcustom garoon-schedule-fetch-days
   14
-  "The entries scheduled until this will be fetched."
-  :type 'integer
+  "Max amount of days of period for fetching."
+  :type 'integerx
   :group 'garoon)
 
 (defcustom garoon-schedule-use-plan-for-tags
   t
-  "Set event tags to plan."
+  "Whether set event plan to tags."
   :type 'boolean
   :group 'garoon)
 
@@ -195,7 +195,7 @@ PATH is composed of node regexps delimited by \"/\".
 (defmacro garoon-time-part (time part)
   "Return PART of TIME with `decode-time'.
 
-Part symbols are: :sec :min :hour :day :month :year :dow :dst :utfoff."
+PART symbols are: :sec :min :hour :day :month :year :dow :dst :utfoff."
   `(pcase (decode-time ,time)
      (`(,sec ,min ,hour ,day ,month ,year ,dow ,dst ,utfoff)
       ;; to suppress flycheck warnings, consume all lexical variables here
