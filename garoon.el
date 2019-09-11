@@ -512,10 +512,9 @@ Negative START means offset from last day of month."
                       :end-date (alist-get 'end_date attr)
                       :start-time (alist-get 'start_time attr)
                       :end-time (alist-get 'end_time attr)))
-         (start-date (plist-get plist :start-date))
          (end-date (plist-get plist :end-date)))
     (unless end-date
-      (setq end-date (garoon-time-add-days start-date garoon-schedule-fetch-days))
+      (setq end-date (garoon-time-add-days (current-time) garoon-schedule-fetch-days))
       (setq end-date (garoon-time-date-string end-date)))
     (plist-put plist :end-date (garoon-time-end-of-day end-date))))
 
