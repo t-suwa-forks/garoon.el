@@ -734,7 +734,8 @@ The LIST forms (START END)."
            (garoon-schedule--remove removed))))
       (garoon-schedule--archive)
       (save-buffer)))
-  (message "garoon schedule synchronized."))
+  (message "Garoon schedule has been synchronized at %s"
+           (format-time-string "%H:%M")))
 
 (provide 'garoon)
 
