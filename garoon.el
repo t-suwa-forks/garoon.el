@@ -596,12 +596,12 @@ The LIST forms (START END)."
      ((garoon-time-day-equal-p start end) ; same day
       (replace-regexp-in-string
        ">"
-       (format-time-string "--%H:%M>" end)
+       (format-time-string "-%H:%M>" end)
        (format-time-string time start)))
      (t                                 ; period
       (concat
        (format-time-string time start)
-       "--"
+       "-"
        (format-time-string time end))))))
 
 (defun garoon-org-expiration-date (dates)
